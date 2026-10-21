@@ -1,0 +1,6 @@
+{
+  "name": "kurulum",
+  "version": "1.0.0",
+  "description": "Sapproval ABAP'ı kurulum kodunuzla kurar (/kurulum:kur <kod>).",
+  "author": { "name": "Sapproval Labs" }
+}
