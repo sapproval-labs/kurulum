@@ -19,28 +19,16 @@ const os = require('os');
 const path = require('path');
 const { execFileSync } = require('child_process');
 
-// The service has no domain name yet: it is reached by IP with its own certificate, which is pinned
-// here (the certificate itself is the only trusted CA, and its public key must match).
-const SERVER = 'https://89.252.179.200';
-const SERVER_CERT = `-----BEGIN CERTIFICATE-----
-MIIBnTCCAUKgAwIBAgIUS/Z2UgndmkMyNAL8gm6D24kfgz0wCgYIKoZIzj0EAwIw
-GzEZMBcGA1UEAwwQU2FwcHJvdmFsIEVyaXNpbTAeFw0yNjEwMjExMDAzMTVaFw0z
-NjEwMTgxMDAzMTVaMBsxGTAXBgNVBAMMEFNhcHByb3ZhbCBFcmlzaW0wWTATBgcq
-hkjOPQIBBggqhkjOPQMBBwNCAAR1hklcl0di9tbDXRok+zbPkntVHOCrkIaDdex+
-X7opMhgLgwKt6ML2um8BrgKuPHDwwclCQLSrKQP52T+243zMo2QwYjAdBgNVHQ4E
-FgQUivQZRWS7CPOUHMBQg05Mbi7wFJIwHwYDVR0jBBgwFoAUivQZRWS7CPOUHMBQ
-g05Mbi7wFJIwDwYDVR0TAQH/BAUwAwEB/zAPBgNVHREECDAGhwRZ/LPIMAoGCCqG
-SM49BAMCA0kAMEYCIQCImThVmIK3owhnbnyo9ZcPPI3q+mrQ6ZovP1z55Em17AIh
-AM283DFHYxKsVcfXpouC9JZZqh5hYwhsFvH1Pg6/KRyI
------END CERTIFICATE-----
-`;
+// The service's address; its certificate is a normal public one (Let's Encrypt), checked against Node's
+// trusted CAs and the host name.
+const SERVER = 'https://erisim.sapproval.com';
 const ORG_URL = 'https://github.com/sapproval-labs';
 
 const HOME_DIR = path.join(os.homedir(), '.sapproval');
 const STATE_FILE = path.join(HOME_DIR, 'cihaz.json');
 const RUNTIME_COPY = path.join(HOME_DIR, 'runtime', 'erisim.js');
 
-// Tests point the client at a local plain-HTTP service; anything else must be the pinned HTTPS one.
+// Tests point the client at a local plain-HTTP service; anything else must be the HTTPS service above.
 function serverUrl() {
   const env = process.env.SAPPROVAL_ERISIM_URL;
   if (env && /^http:\/\/127\.0\.0\.1:\d+$/.test(env)) return env;
@@ -77,15 +65,7 @@ function request(method, p, body, { sign = null, bearer = null, timeout = 15000 
   }
   const mod = base.protocol === 'https:' ? require('https') : require('http');
   const opts = { method, host: base.hostname, port: base.port || (base.protocol === 'https:' ? 443 : 80), path: p, headers, timeout };
-  if (base.protocol === 'https:') {
-    opts.ca = [SERVER_CERT];
-    opts.rejectUnauthorized = true;
-    const pin = crypto.createHash('sha256').update(new crypto.X509Certificate(SERVER_CERT).publicKey.export({ type: 'spki', format: 'der' })).digest('base64');
-    opts.checkServerIdentity = (host, cert) => {
-      const got = crypto.createHash('sha256').update(new crypto.X509Certificate(cert.raw).publicKey.export({ type: 'spki', format: 'der' })).digest('base64');
-      return got === pin ? undefined : new Error('Sapproval sunucusunun sertifikası beklenen sertifika değil.');
-    };
-  }
+  if (base.protocol === 'https:') opts.rejectUnauthorized = true;
   return new Promise((resolve, reject) => {
     const req = mod.request(opts, (res) => {
       let text = '';
