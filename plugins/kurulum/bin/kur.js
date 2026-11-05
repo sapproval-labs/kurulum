@@ -14,7 +14,8 @@ const { spawnSync } = require('child_process');
 
 const MARKET_REPO = 'sapproval-labs/abap-dev';
 const MARKET = 'sapproval';
-const PLUGIN = 'abap-dev@sapproval';
+const PLUGIN = 'sapproval@sapproval';
+const OLD_PLUGIN = 'abap-dev@sapproval'; // the plugin's name until 0.43
 const say = (s) => process.stdout.write(`${s}\n`);
 const done = (o) => { process.stdout.write(`${JSON.stringify(o)}\n`); process.exit(o.ok ? 0 : 1); };
 
@@ -40,7 +41,7 @@ function readSettings() {
   try { return JSON.parse(fs.readFileSync(path.join(configDir(), 'settings.json'), 'utf8')); } catch { return {}; }
 }
 function pluginRoot() {
-  const cache = path.join(configDir(), 'plugins', 'cache', MARKET, 'abap-dev');
+  const cache = path.join(configDir(), 'plugins', 'cache', MARKET, 'sapproval');
   try {
     return fs.readdirSync(cache).map((d) => path.join(cache, d)).filter((d) => fs.existsSync(path.join(d, 'lib', 'team.js')))
       .sort((x, y) => fs.statSync(y).mtimeMs - fs.statSync(x).mtimeMs)[0] || null;
@@ -86,8 +87,15 @@ async function main() {
       const r = claude(cli, ['plugin', 'marketplace', 'add', MARKET_REPO]);
       if (!r.ok) return done({ ok: false, error: `Sapproval marketplace eklenemedi: ${r.out.split('\n').slice(-2).join(' ')}` });
     }
+    // A marketplace added before the plugin was renamed ("abap-dev" until 0.43) does not know the new name yet.
+    else claude(cli, ['plugin', 'marketplace', 'update', MARKET]);
     const r = claude(cli, ['plugin', 'install', PLUGIN]);
     if (!r.ok) return done({ ok: false, error: `Sapproval eklentisi kurulamadı: ${r.out.split('\n').slice(-2).join(' ')}` });
+  }
+  // The old name blocks SAP calls while it is installed next to the new one.
+  if (s.enabledPlugins && Object.prototype.hasOwnProperty.call(s.enabledPlugins, OLD_PLUGIN)) {
+    const cli = claudeCli();
+    if (cli) claude(cli, ['plugin', 'uninstall', OLD_PLUGIN]);
   }
   say('✓ Sapproval eklentisi Claude Code\'da');
 

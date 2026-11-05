@@ -23,6 +23,6 @@ Türkçe, kısa ve sade konuş; kullanıcı teknik olmayabilir.
    - `"manual"` listesi doluysa: bu satırları kullanıcıya kod bloğu olarak ver ve sohbet kutusuna sırayla yazmasını iste
      (sen slash komutu çalıştıramazsın). Yazdıktan sonra `/kurulum:kur` komutunu tekrar yazmasını söyle; kurulum kaldığı yerden devam eder.
    - `"ok": true`: kurulumun tamamlandığını söyle. Kullanıcı Claude uygulamasını tamamen kapatıp yeniden açsın ve
-     sohbet kutusuna `/abap-dev:setup` yazarak SAP sistemini tanımlasın.
+     sohbet kutusuna `/sapproval:setup` yazarak SAP sistemini tanımlasın.
    - Diğer hatalarda `error` metnini olduğu gibi ilet; kod geçersizse Sapproval'dan yeni kod istemesini söyle.
 4. Kurulum kodunu, çıktıdaki anahtarları veya dosya içeriklerini başka hiçbir yere yazma veya gönderme.

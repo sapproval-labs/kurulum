@@ -46,8 +46,10 @@ const isActivated = () => !!readState()?.deviceId;
 
 function writeState(s) {
   fs.mkdirSync(HOME_DIR, { recursive: true });
-  fs.writeFileSync(STATE_FILE + '.tmp', JSON.stringify(s, null, 2) + '\n', { mode: 0o600 });
-  fs.renameSync(STATE_FILE + '.tmp', STATE_FILE);
+  // A temp name per process: two sessions starting together must not rename each other's file away.
+  const tmp = `${STATE_FILE}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(s, null, 2) + '\n', { mode: 0o600 });
+  fs.renameSync(tmp, STATE_FILE);
 }
 
 // bearer: Sapproval Labs' admin key (tools/lib/admin.js); sign: this PC's device state.
