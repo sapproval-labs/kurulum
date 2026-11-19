@@ -26,6 +26,7 @@ const ORG_URL = 'https://github.com/sapproval-labs';
 
 const HOME_DIR = path.join(os.homedir(), '.sapproval');
 const STATE_FILE = path.join(HOME_DIR, 'cihaz.json');
+const PIN_FILE = path.join(HOME_DIR, 'kayit.json');
 const RUNTIME_COPY = path.join(HOME_DIR, 'runtime', 'erisim.js');
 
 // Tests point the client at a local plain-HTTP service; anything else must be the HTTPS service above.
@@ -50,6 +51,20 @@ function writeState(s) {
   const tmp = `${STATE_FILE}.${process.pid}.tmp`;
   fs.writeFileSync(tmp, JSON.stringify(s, null, 2) + '\n', { mode: 0o600 });
   fs.renameSync(tmp, STATE_FILE);
+  // The person and the company once more, in a file of their own: a damaged cihaz.json must not let the next
+  // activation take another person's sets (activate()).
+  if (s?.person?.id || s?.customer?.slug) {
+    try {
+      const pin = { personId: s.person?.id || null, slug: s.customer?.slug || null };
+      const ptmp = `${PIN_FILE}.${process.pid}.tmp`;
+      fs.writeFileSync(ptmp, JSON.stringify(pin) + '\n');
+      fs.renameSync(ptmp, PIN_FILE);
+    } catch { /* cihaz.json keeps them too */ }
+  }
+}
+
+function readPin() {
+  try { return JSON.parse(fs.readFileSync(PIN_FILE, 'utf8')) || {}; } catch { return {}; }
 }
 
 // bearer: Sapproval Labs' admin key (tools/lib/admin.js); sign: this PC's device state.
@@ -108,14 +123,48 @@ function unconfigureGit() {
   }
 }
 
+// The team repository this PC already follows, from an earlier registration or its connection (~/.sapproval/team.json).
+function previousTeam() {
+  const s = readState();
+  if (s?.customer?.team) return s.customer.team;
+  try {
+    const repo = JSON.parse(fs.readFileSync(path.join(HOME_DIR, 'team.json'), 'utf8')).repo;
+    if (repo) return repo;
+  } catch { /* missing or damaged: the clone itself */ }
+  try {
+    const url = execFileSync('git', ['-C', path.join(HOME_DIR, 'team'), 'remote', 'get-url', 'origin'],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true, timeout: 5000 }).trim();
+    return url || null;
+  } catch { return null; }
+}
+
 async function activate(code) {
   const { publicKey, privateKey } = crypto.generateKeyPairSync('ed25519');
+  // Activated again (after a "revoked" answer, say): the company's repository stays the one this PC follows, as in
+  // status(). An answer without one, or naming another, must not drop or switch it (lib/team.js signature checks).
+  const before = previousTeam();
+  // The same for the person and the company (lib/atamalar.js picks the permission and rule sets by person.id).
+  const state = readState();
+  const pin = readPin();
+  const wasId = state?.person?.id || pin.personId || null;
+  const wasSlug = state?.customer?.slug || pin.slug || null;
   const r = await request('POST', '/v1/activate', {
     code, publicKey: publicKey.export({ type: 'spki', format: 'pem' }), host: os.hostname(), user: os.userInfo().username,
   });
+  const key = (x) => String(x || '').trim().replace(/^https:\/\/github\.com\//i, '').replace(/\.git$/i, '').replace(/\/+$/, '').toLowerCase();
+  if (before && r.customer?.team && key(r.customer.team) !== key(before)) {
+    throw new Error('Bu bilgisayar başka bir şirketin ekip deposuna bağlı. Sapproval Labs ile iletişime geçin (bilgisayar başka bir şirkete geçiyorsa önce eski şirketin ayarları kaldırılmalı).');
+  }
+  if ((wasId && r.person?.id && r.person.id !== wasId) || (wasSlug && r.customer?.slug && r.customer.slug !== wasSlug)) {
+    throw new Error('Bu bilgisayar başka bir kişiye kayıtlı. Sapproval Labs ile iletişime geçin (bilgisayar başka birine geçiyorsa önce eski kayıt kaldırılmalı).');
+  }
+  const person = wasId ? { ...(r.person || {}), id: wasId } : r.person;
+  const customer = r.customer
+    ? { ...r.customer, team: before || r.customer.team || null, ...(wasSlug ? { slug: wasSlug } : {}) }
+    : (before || wasSlug ? { team: before || null, ...(wasSlug ? { slug: wasSlug } : {}) } : r.customer);
   writeState({
     deviceId: r.deviceId, privateKey: privateKey.export({ type: 'pkcs8', format: 'pem' }),
-    person: r.person, customer: r.customer, productRepo: r.productRepo, license: r.license || null, activated: new Date().toISOString(),
+    person, customer, productRepo: r.productRepo, license: r.license || null, activated: new Date().toISOString(),
   });
   configureGit();
   return r;
@@ -124,6 +173,7 @@ async function activate(code) {
 function deactivate() {
   unconfigureGit();
   fs.rmSync(STATE_FILE, { force: true });
+  fs.rmSync(PIN_FILE, { force: true });
 }
 
 // { state: 'active' | 'revoked', person, customer } or throws (code 'offline' when unreachable).
