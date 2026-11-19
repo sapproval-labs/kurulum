@@ -115,7 +115,7 @@ async function activate(code) {
   });
   writeState({
     deviceId: r.deviceId, privateKey: privateKey.export({ type: 'pkcs8', format: 'pem' }),
-    person: r.person, customer: r.customer, productRepo: r.productRepo, activated: new Date().toISOString(),
+    person: r.person, customer: r.customer, productRepo: r.productRepo, license: r.license || null, activated: new Date().toISOString(),
   });
   configureGit();
   return r;
@@ -127,12 +127,24 @@ function deactivate() {
 }
 
 // { state: 'active' | 'revoked', person, customer } or throws (code 'offline' when unreachable).
-async function status() {
+// client: what this PC tells the service at a session start (lib/access.js clientInfo): version, OS, SAP system counts.
+async function status(client = null) {
   const s = readState();
   if (!s) return { state: 'none' };
-  const r = await request('POST', '/v1/status', {}, { sign: s });
-  if (r.state === 'active' && (r.customer?.team !== s.customer?.team || r.person?.role !== s.person?.role)) {
-    writeState({ ...s, person: r.person, customer: r.customer });
+  const r = await request('POST', '/v1/status', client ? { client } : {}, { sign: s });
+  // PCs activated before license stamps (or the person id, which lib/atamalar.js assigns sets by) existed get
+  // them here (lib/runtime.js writes the stamp into the runtime copy).
+  // The company's team repository stays the one this PC was activated with: an answer of the service never changes or
+  // drops it (whoever took the service over could otherwise point the PC at another repository, or at none and so turn
+  // the signature checks of lib/team.js off). A moved repository means a new setup code.
+  // The same for the person and the company: lib/atamalar.js picks the person's permission and rule sets by person.id,
+  // so an answer naming another person would choose which signed set this PC enforces. Once known, they stay.
+  const team = s.customer?.team || r.customer?.team || null;
+  const customer = r.customer ? { ...r.customer, team, slug: s.customer?.slug || r.customer.slug } : s.customer;
+  const person = r.person ? { ...r.person, id: s.person?.id || r.person.id } : s.person;
+  if (r.state === 'active' && (customer?.team !== s.customer?.team || person?.role !== s.person?.role || person?.id !== s.person?.id
+    || customer?.name !== s.customer?.name || (r.license && r.license !== s.license))) {
+    writeState({ ...s, person, customer, license: r.license || s.license || null });
   }
   return r;
 }
