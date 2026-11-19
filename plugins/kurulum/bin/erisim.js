@@ -50,7 +50,7 @@ function writeState(s) {
   // A temp name per process: two sessions starting together must not rename each other's file away.
   const tmp = `${STATE_FILE}.${process.pid}.tmp`;
   fs.writeFileSync(tmp, JSON.stringify(s, null, 2) + '\n', { mode: 0o600 });
-  fs.renameSync(tmp, STATE_FILE);
+  replaceFile(tmp, STATE_FILE);
   // The person and the company once more, in a file of their own: a damaged cihaz.json must not let the next
   // activation take another person's sets (activate()).
   if (s?.person?.id || s?.customer?.slug) {
@@ -58,8 +58,27 @@ function writeState(s) {
       const pin = { personId: s.person?.id || null, slug: s.customer?.slug || null };
       const ptmp = `${PIN_FILE}.${process.pid}.tmp`;
       fs.writeFileSync(ptmp, JSON.stringify(pin) + '\n');
-      fs.renameSync(ptmp, PIN_FILE);
+      replaceFile(ptmp, PIN_FILE);
     } catch { /* cihaz.json keeps them too */ }
+  }
+}
+
+// The last step of an atomic write. On Windows the rename fails now and then (EPERM, EBUSY, EACCES) while another
+// process has the target open: tried again for a moment; a failure that stays removes the temporary file and throws.
+// (lib/dosya.js does the same; this file stays self-contained for install.ps1.)
+function replaceFile(tmp, target) {
+  const pause = new Int32Array(new SharedArrayBuffer(4));
+  for (let i = 1; ; i++) {
+    try {
+      fs.renameSync(tmp, target);
+      return;
+    } catch (e) {
+      if (!['EPERM', 'EBUSY', 'EACCES'].includes(e.code) || i >= 20) {
+        try { fs.rmSync(tmp, { force: true }); } catch { /* best effort */ }
+        throw e;
+      }
+      Atomics.wait(pause, 0, 0, 25 * i);
+    }
   }
 }
 
@@ -132,7 +151,8 @@ function previousTeam() {
     if (repo) return repo;
   } catch { /* missing or damaged: the clone itself */ }
   try {
-    const url = execFileSync('git', ['-C', path.join(HOME_DIR, 'team'), 'remote', 'get-url', 'origin'],
+    // The configured address, not the one a url.insteadOf rule rewrites it to (git remote get-url would).
+    const url = execFileSync('git', ['-C', path.join(HOME_DIR, 'team'), 'config', '--get', 'remote.origin.url'],
       { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true, timeout: 5000 }).trim();
     return url || null;
   } catch { return null; }
@@ -148,8 +168,11 @@ async function activate(code) {
   const pin = readPin();
   const wasId = state?.person?.id || pin.personId || null;
   const wasSlug = state?.customer?.slug || pin.slug || null;
+  // What this PC is bound to goes along: the service refuses another person's or company's code before using it up.
+  const expect = { ...(wasId ? { personId: wasId } : {}), ...(wasSlug ? { slug: wasSlug } : {}), ...(before ? { team: before } : {}) };
   const r = await request('POST', '/v1/activate', {
     code, publicKey: publicKey.export({ type: 'spki', format: 'pem' }), host: os.hostname(), user: os.userInfo().username,
+    ...(Object.keys(expect).length ? { expect } : {}),
   });
   const key = (x) => String(x || '').trim().replace(/^https:\/\/github\.com\//i, '').replace(/\.git$/i, '').replace(/\/+$/, '').toLowerCase();
   if (before && r.customer?.team && key(r.customer.team) !== key(before)) {
