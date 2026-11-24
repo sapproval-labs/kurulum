@@ -12,6 +12,7 @@
 //   node erisim.js credential get       git credential helper (reads git's request on stdin)
 //   node erisim.js status               print this PC's access state
 //   node erisim.js deactivate           forget the device key and remove the git setting
+//   node erisim.js scribe <dir> [ver]   download Sapproval Scribe's installer (company with Scribe; install.ps1)
 
 const crypto = require('crypto');
 const fs = require('fs');
@@ -86,8 +87,9 @@ function readPin() {
   try { return JSON.parse(fs.readFileSync(PIN_FILE, 'utf8')) || {}; } catch { return {}; }
 }
 
-// bearer: Sapproval Labs' admin key (tools/lib/admin.js); sign: this PC's device state.
-function request(method, p, body, { sign = null, bearer = null, timeout = 15000 } = {}) {
+// bearer: Sapproval Labs' admin key (tools/lib/admin.js); sign: this PC's device state; raw: a successful answer as
+// bytes (a download), not JSON.
+function request(method, p, body, { sign = null, bearer = null, timeout = 15000, raw: asBytes = false } = {}) {
   const base = new URL(serverUrl());
   const raw = body === undefined ? '' : JSON.stringify(body);
   const headers = { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(raw), 'User-Agent': 'sapproval' };
@@ -104,10 +106,12 @@ function request(method, p, body, { sign = null, bearer = null, timeout = 15000 
   if (base.protocol === 'https:') opts.rejectUnauthorized = true;
   return new Promise((resolve, reject) => {
     const req = mod.request(opts, (res) => {
-      let text = '';
-      res.setEncoding('utf8');
-      res.on('data', (d) => { text += d; });
+      const chunks = [];
+      res.on('data', (d) => { chunks.push(d); });
       res.on('end', () => {
+        const bytes = Buffer.concat(chunks);
+        if (asBytes && res.statusCode >= 200 && res.statusCode < 300) return resolve(bytes);
+        const text = bytes.toString('utf8');
         let json = {};
         try { json = text ? JSON.parse(text) : {}; } catch { json = { error: text.slice(0, 200) }; }
         if (res.statusCode >= 200 && res.statusCode < 300) resolve(json);
@@ -176,10 +180,10 @@ async function activate(code) {
   });
   const key = (x) => String(x || '').trim().replace(/^https:\/\/github\.com\//i, '').replace(/\.git$/i, '').replace(/\/+$/, '').toLowerCase();
   if (before && r.customer?.team && key(r.customer.team) !== key(before)) {
-    throw new Error('Bu bilgisayar başka bir şirketin ekip deposuna bağlı. Sapproval Labs ile iletişime geçin (bilgisayar başka bir şirkete geçiyorsa önce eski şirketin ayarları kaldırılmalı).');
+    throw new Error('Bu bilgisayar başka bir şirketin ekip deposuna bağlı. Sapproval Ekibi ile iletişime geçin (bilgisayar başka bir şirkete geçiyorsa önce eski şirketin ayarları kaldırılmalı).');
   }
   if ((wasId && r.person?.id && r.person.id !== wasId) || (wasSlug && r.customer?.slug && r.customer.slug !== wasSlug)) {
-    throw new Error('Bu bilgisayar başka bir kişiye kayıtlı. Sapproval Labs ile iletişime geçin (bilgisayar başka birine geçiyorsa önce eski kayıt kaldırılmalı).');
+    throw new Error('Bu bilgisayar başka bir kişiye kayıtlı. Sapproval Ekibi ile iletişime geçin (bilgisayar başka birine geçiyorsa önce eski kayıt kaldırılmalı).');
   }
   const person = wasId ? { ...(r.person || {}), id: wasId } : r.person;
   const customer = r.customer
@@ -243,7 +247,63 @@ async function credential(op) {
   }
 }
 
-module.exports = { SERVER, STATE_FILE, RUNTIME_COPY, ORG_URL, readState, isActivated, activate, deactivate, status, token, configureGit, request };
+// ---- Sapproval Scribe (install.ps1, for a company whose license has it) ----
+// The public half of Sapproval Labs' Scribe publisher key (SapprovalScribe/cekirdek/guncelleme.py YAYINCI_ANAHTARI):
+// the version info the service hands out must be signed with it, so a service taken over cannot install a forged
+// program. Tests against a local service may name their own key.
+const SCRIBE_PUBLISHER = '42ce2f36c7872d85c4aab92a46cc44848f27aecc13fe7e53638d453c9aa0776f';
+function scribePublisher() {
+  const env = process.env.SAPPROVAL_SCRIBE_PUBLISHER;
+  return env && serverUrl() !== SERVER && /^[0-9a-f]{64}$/.test(env) ? env : SCRIBE_PUBLISHER;
+}
+
+// What Scribe signs (SapprovalScribe/cekirdek/imza.py manifest_bytes): the version info without "imza", keys sorted,
+// no spaces (Python json.dumps(sort_keys=True, separators=(',', ':'), ensure_ascii=False)).
+function canonical(v) {
+  if (Array.isArray(v)) return `[${v.map(canonical).join(',')}]`;
+  if (v && typeof v === 'object') return `{${Object.keys(v).sort().map((k) => `${JSON.stringify(k)}:${canonical(v[k])}`).join(',')}}`;
+  return JSON.stringify(v);
+}
+function scribeSigned(m) {
+  try {
+    const { imza, ...rest } = m;
+    const key = crypto.createPublicKey({ key: Buffer.concat([Buffer.from('302a300506032b6570032100', 'hex'), Buffer.from(scribePublisher(), 'hex')]), format: 'der', type: 'spki' });
+    return crypto.verify(null, Buffer.from(canonical(rest), 'utf8'), key, Buffer.from(String(imza || ''), 'base64'));
+  } catch { return false; }
+}
+const verNum = (v) => String(v || '').split('.').map((x) => (/^\d+$/.test(x) ? Number(x) : 0));
+function newerVersion(a, b) {
+  const x = verNum(a);
+  const y = verNum(b);
+  for (let i = 0; i < Math.max(x.length, y.length); i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0);
+  return false;
+}
+
+// Downloads Scribe's installer into dir as this PC: the service's signed version info is checked against the publisher
+// key, the file against its sha256. installed: the version already on this PC ('' when none); nothing is downloaded when
+// it is not older. Returns { ok, file, version } | { ok: true, upToDate, version } | { ok: false, skip, message }.
+async function scribeInstaller(dir, installed = '') {
+  const s = readState();
+  if (!s) throw new Error('Bu bilgisayar Sapproval erişim servisine kayıtlı değil.');
+  const st = await request('POST', '/v1/scribe/status', { product: 'scribe' }, { sign: s });
+  if (st.state !== 'active') return { ok: false, skip: true, state: st.state, message: st.message || 'Sapproval Scribe lisansı etkin değil.' };
+  const m = st.update;
+  if (!m || typeof m !== 'object' || !m.surum || !/^[0-9a-f]{64}$/i.test(String(m.sha256 || ''))) {
+    return { ok: false, skip: true, message: 'Sunucuda Sapproval Scribe kurulum dosyası yok.' };
+  }
+  if (!scribeSigned(m)) throw new Error('Sapproval Scribe sürüm bilgisinin imzası doğrulanamadı; güvenlik için kurulmadı.');
+  if (installed && !newerVersion(m.surum, installed)) return { ok: true, upToDate: true, version: installed };
+  const data = await request('POST', '/v1/scribe/download', { version: m.surum }, { sign: s, raw: true, timeout: 120000 });
+  if (crypto.createHash('sha256').update(data).digest('hex') !== String(m.sha256).toLowerCase()) {
+    throw new Error('İndirilen Sapproval Scribe kurulum dosyası imzalı sürüm bilgisiyle uyuşmuyor; kurulmadı.');
+  }
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, `SapprovalScribe-Kurulum-${String(m.surum).replace(/[^0-9A-Za-z.-]/g, '')}.exe`);
+  fs.writeFileSync(file, data);
+  return { ok: true, file, version: m.surum };
+}
+
+module.exports = { SERVER, STATE_FILE, RUNTIME_COPY, ORG_URL, readState, isActivated, activate, deactivate, status, token, configureGit, request, scribeInstaller };
 
 if (require.main === module) {
   const [cmd, arg] = process.argv.slice(2);
@@ -255,8 +315,9 @@ if (require.main === module) {
     credential: () => credential(arg),
     status: async () => process.stdout.write(JSON.stringify(await status()) + '\n'),
     deactivate: async () => { deactivate(); process.stdout.write('{"ok":true}\n'); },
+    scribe: async () => process.stdout.write(JSON.stringify(await scribeInstaller(arg, process.argv[4] || '')) + '\n'),
   }[cmd];
-  if (!run) { process.stderr.write('Kullanım: node erisim.js activate <kod> | credential get | status | deactivate\n'); process.exit(2); }
+  if (!run) { process.stderr.write('Kullanım: node erisim.js activate <kod> | credential get | status | deactivate | scribe <klasör> [kurulu sürüm]\n'); process.exit(2); }
   Promise.resolve(run()).catch((e) => {
     process.stdout.write(JSON.stringify({ ok: false, error: e.message, code: e.code || null }) + '\n');
     process.exit(cmd === 'credential' ? 0 : 1);

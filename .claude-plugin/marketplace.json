@@ -1,12 +1,12 @@
 {
   "name": "sapproval-kurulum",
-  "owner": { "name": "Sapproval Labs" },
-  "metadata": { "description": "Sapproval ABAP kurulumu: kurulum kodunuzla Sapproval'ı Claude Code'a ekler." },
+  "owner": { "name": "Sapproval Ekibi" },
+  "metadata": { "description": "Sapproval Labs kurulumu: kurulum kodunuzla Sapproval'ı Claude Code'a ekler." },
   "plugins": [
     {
       "name": "kurulum",
       "source": "./plugins/kurulum",
-      "description": "Sapproval ABAP'ı kurulum kodunuzla kurar (/kurulum:kur <kod>).",
+      "description": "Sapproval Labs'ı kurulum kodunuzla kurar (/kurulum:kur <kod>).",
       "version": "1.0.1"
     }
   ]

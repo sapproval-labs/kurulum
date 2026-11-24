@@ -40,7 +40,17 @@ const configDir = () => process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(),
 function readSettings() {
   try { return JSON.parse(fs.readFileSync(path.join(configDir(), 'settings.json'), 'utf8')); } catch { return {}; }
 }
+// The folder of the Sapproval Labs version Claude Code has installed (installed_plugins.json, as install.ps1 and the
+// plugin's lib/update.js read it); when that cannot be read, the newest version folder. Old version folders stay in the
+// cache, and the newest by date is not always the installed one.
 function pluginRoot() {
+  try {
+    const j = JSON.parse(fs.readFileSync(path.join(configDir(), 'plugins', 'installed_plugins.json'), 'utf8'));
+    const map = j.plugins || j;
+    const entries = Object.entries(map).filter(([k]) => k.startsWith('sapproval@')).flatMap(([, v]) => (Array.isArray(v) ? v : [v]));
+    const entry = entries.find((e) => e?.scope === 'user') || entries[0];
+    if (entry?.installPath && fs.existsSync(path.join(entry.installPath, 'lib', 'team.js'))) return entry.installPath;
+  } catch { /* the cache below */ }
   const cache = path.join(configDir(), 'plugins', 'cache', MARKET, 'sapproval');
   try {
     return fs.readdirSync(cache).map((d) => path.join(cache, d)).filter((d) => fs.existsSync(path.join(d, 'lib', 'team.js')))
@@ -60,10 +70,29 @@ async function main() {
   const erisim = require('./erisim');
   let st = null;
   if (erisim.isActivated()) {
-    try { st = await erisim.status(); } catch (e) { if (e.code !== 'offline') st = null; else return done({ ok: false, error: e.message }); }
+    try {
+      st = await erisim.status();
+    } catch (e) {
+      // Not reached, or the PC clock is wrong: say so, the code is not the problem. A registration the service does not
+      // know (unknown_device, signature) is registered again with the code below.
+      if (e.code === 'offline') return done({ ok: false, error: e.message });
+      if (e.code === 'clock') return done({ ok: false, error: `${e.message} Windows'ta "Saati otomatik olarak ayarla"yı açıp tekrar deneyin.` });
+      st = null;
+    }
+  }
+  if (st && st.state === 'active' && code) {
+    // Registered and active, and a code given: another person's code is refused before it is used up (setup must not go
+    // on as someone else); the code this PC was set up with (already used) changes nothing.
+    try {
+      const r = await erisim.activate(code);
+      st = { state: 'active', person: r.person, customer: r.customer };
+    } catch (e) {
+      if (e.code === 'other_pc') return done({ ok: false, error: e.message });
+    }
   }
   if (!st || st.state !== 'active') {
-    if (!code) return done({ ok: false, error: 'Kurulum kodunu yazın: /kurulum:kur ABCD-EFGH-JKLM' });
+    // Without a code, a closed or ended license is told as it is, not as a missing code.
+    if (!code) return done({ ok: false, error: st?.message || 'Kurulum kodunu yazın: /kurulum:kur ABCD-EFGH-JKLM' });
     try {
       const r = await erisim.activate(code);
       st = { state: 'active', person: r.person, customer: r.customer };
@@ -76,7 +105,8 @@ async function main() {
   // 2. Marketplace and plugin.
   const s = readSettings();
   const marketKnown = !!s.extraKnownMarketplaces?.[MARKET];
-  const pluginOn = s.enabledPlugins?.[PLUGIN] === true || !!pluginRoot();
+  // Turned off on purpose (false) is not "installed": it is installed and turned on again.
+  const pluginOn = s.enabledPlugins?.[PLUGIN] === true || (s.enabledPlugins?.[PLUGIN] === undefined && !!pluginRoot());
   if (!marketKnown || !pluginOn) {
     const cli = claudeCli();
     if (!cli) {
@@ -123,6 +153,11 @@ async function main() {
     } catch (e) {
       say(`! Şirket ayarları bağlanamadı: ${e.message}. Kurulum ekranından da bağlanabilir.`);
     }
+  }
+  // Sapproval Scribe is a desktop program of its own: this path does not install it.
+  if ((st.customer.products || []).includes('scribe')) {
+    say('ℹ Şirketinizin lisansında Sapproval Scribe (Teams toplantı asistanı) da var. Davet e-postanızdaki Scribe bağlantısından '
+      + 'bu bilgisayara kurun; bağlantınız yoksa ekip yöneticinizden ya da Sapproval Ekibi\'nden Scribe daveti isteyin.');
   }
   return done({ ok: true });
 }

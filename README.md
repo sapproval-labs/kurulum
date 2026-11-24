@@ -1,6 +1,6 @@
-# Sapproval ABAP kurulumu
+# Sapproval Labs kurulumu
 
-Sapproval ABAP'ı Claude Code üzerinden kurmak için (kurulum programı açılamadığında). Claude Code'da sohbet
+Sapproval Labs'ı Claude Code üzerinden kurmak için (kurulum programı açılamadığında). Claude Code'da sohbet
 kutusuna sırayla yazın:
 
 ```
@@ -9,5 +9,5 @@ kutusuna sırayla yazın:
 /kurulum:kur <kurulum kodunuz>
 ```
 
-Kurulum kodunu Sapproval Labs size iletir. Bu depo sadece kurulum adımlarını içerir; ürünün kendisi
+Kurulum kodunu Sapproval Ekibi size iletir. Bu depo sadece kurulum adımlarını içerir; ürünün kendisi
 kodunuzla kaydolan bilgisayarlara açılır.
